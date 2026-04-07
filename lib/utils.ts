@@ -1,5 +1,11 @@
 import { VERCEL_AVATAR_API_URL } from '@/lib/constants'
+import { type ClassValue, clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
 import ms from 'ms'
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
 
 export const getAvatar = (teamId: string) => {
     const url = `${VERCEL_AVATAR_API_URL}?teamId=${teamId}&rounded=60`

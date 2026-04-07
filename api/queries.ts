@@ -1,16 +1,15 @@
 import vercel from '@/lib/vercel'
-import { usePersistedStore } from '@/store/persisted'
 import type {
-    CommonApiStatus,
-    CommonDeploymentStatus,
-    CommonEnvironmentVariable,
-    CommonPagination,
+  CommonApiStatus,
+  CommonDeploymentStatus,
+  CommonEnvironmentVariable,
+  CommonPagination,
 } from '@/types/common'
 import type {
-    Deployment,
-    DeploymentBuild,
-    DeploymentBuildAsset,
-    DeploymentBuildMetadata,
+  Deployment,
+  DeploymentBuild,
+  DeploymentBuildAsset,
+  DeploymentBuildMetadata,
 } from '@/types/deployments'
 import type { Domain, DomainConfig } from '@/types/domains'
 import type { Log } from '@/types/logs'
@@ -24,1629 +23,189 @@ import ms from 'ms'
 const TRAILING_SLASHES_REGEX = /\/+$/
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i
 const LINK_ICON_HREF_REGEX =
-    /<link[^>]*rel=["'][^"']*(?:icon|shortcut icon|apple-touch-icon)[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>/i
+  /<link[^>]*rel=["'][^"']*(?:icon|shortcut icon|apple-touch-icon)[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>/i
 
-function roundToGranularity(
-    date: Date,
-    granularity: '5m' | '1h',
-    mode: 'up' | 'down' = 'up'
-): Date {
-    // if granularity is 5m, we need to round to the nearest 5m
-    // if granularity is 1h, we need to round to the nearest hour
-
-    const granularityMs = granularity === '5m' ? 5 * ms('1m') : ms('1h')
-    const rounded = Math.floor(date.getTime() / granularityMs) * granularityMs
-
-    if (mode === 'up') {
-        return new Date(rounded)
-    }
-    return new Date(rounded - granularityMs)
+function roundToGranularity(date: Date, granularity: '5m' | '1h', mode: 'up' | 'down' = 'up'): Date {
+  const granularityMs = granularity === '5m' ? 5 * ms('1m') : ms('1h')
+  const rounded = Math.floor(date.getTime() / granularityMs) * granularityMs
+  if (mode === 'up') return new Date(rounded)
+  return new Date(rounded - granularityMs)
 }
 
-export async function fetchApiStatus() {
-    try {
-        const response = await vercel.get<CommonApiStatus[]>('/status')
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching API status', error)
-        throw error
-    }
+export async function fetchApiStatus(token: string) {
+  return vercel.get<CommonApiStatus[]>('/status', token)
 }
 
-export async function fetchUserInfo({ connectionId }: { connectionId?: string } = {}) {
-    console.log('fetchUserInfo')
-
-    try {
-        const response = await vercel.get<{ user: User }>('/www/user', undefined, connectionId)
-        console.log('User info', response)
-
-        return response.user
-    } catch (e) {
-        const error = e as Error
-        console.log('Error fetching user info', error)
-        throw error
-    }
+export async function fetchUserInfo(token: string) {
+  const response = await vercel.get<{ user: User }>('/www/user', token)
+  return response.user
 }
 
-export async function fetchAllTeams({
-    flags = false,
-    permissions = false,
-    connectionId,
-}: {
-    flags?: boolean
-    permissions?: boolean
-    connectionId?: string
-} = {}) {
-    const params = new URLSearchParams()
-
-    if (flags) {
-        params.append('flags', flags.toString())
-    }
-    if (permissions) {
-        params.append('permissions', permissions.toString())
-    }
-
-    console.log('[fetchAllTeams] params', params.toString())
-
-    try {
-        const response = await vercel.get<{ teams: Team[] }>(
-            `/teams?${params.toString()}`,
-            undefined,
-            connectionId
-        )
-        return response
-    } catch (error) {
-        console.log('[fetchAllTeams] Error fetching teams', error)
-        throw error
-    }
-}
-
-export async function fetchTeamAvatar({
-    connectionId,
-    teamId,
-}: { connectionId?: string; teamId?: string } = {}) {
-    let currentConnection
-
-    if (connectionId) {
-        currentConnection = usePersistedStore
-            .getState()
-            .connections.find((connection) => connection.id === connectionId)
-    } else {
-        currentConnection = usePersistedStore.getState().currentConnection
-    }
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = teamId || currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    try {
-        const response = await fetch(`https://vercel.com/api/www/avatar?teamId=${currentTeamId}`, {
-            headers: {
-                Authorization: `Bearer ${currentConnection.apiToken}`,
-            },
-        })
-        const svgText = await response.text()
-
-        // Use btoa for base64 encoding in React Native
-        const base64 = btoa(svgText)
-        const imageUri = `data:image/svg+xml;base64,${base64}`
-
-        return imageUri
-    } catch (error) {
-        console.log('[Error] Error fetching user avatar', error)
-        throw error
-    }
+export async function fetchAllTeams(token: string, opts: { flags?: boolean; permissions?: boolean } = {}) {
+  const params = new URLSearchParams()
+  if (opts.flags) params.append('flags', 'true')
+  if (opts.permissions) params.append('permissions', 'true')
+  return vercel.get<{ teams: Team[] }>(`/teams?${params}`, token)
 }
 
 export async function fetchTeamProjects(
-    {
-        from,
-        limit,
-        latestDeployments, // number of latest deployments to fetch
-    }: {
-        from?: number
-        limit?: number
-        latestDeployments: number
-    } = {
-        latestDeployments: 5,
-    }
+  token: string,
+  teamId: string,
+  opts: { from?: number; limit?: number; latestDeployments?: number } = {}
 ) {
-    console.log('Fetching projects with', { limit, from, latestDeployments })
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-        latestDeployments: latestDeployments.toString(),
-    })
-
-    if (limit) {
-        params.append('limit', limit.toString())
-    }
-    if (from) {
-        params.append('from', from.toString())
-    }
-
-    try {
-        const response = await vercel.get<Project[]>(`/projects?${params.toString()}`, {
-            headers: {
-                Authorization: `Bearer ${currentConnection.apiToken}`,
-            },
-        })
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching projects', error)
-        throw error
-    }
-}
-
-export async function fetchTeamProjectFavicon({ projectId }: { projectId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    const readyDeployments = await fetchTeamDeployments({
-        projectId,
-        state: ['READY'],
-        limit: 1,
-    })
-
-    //! see VERCEL.md/API
-    //! some api endpoints return `id` others `uid`, this one is `uid`
-    //! thx G
-    // @ts-ignore
-    const deploymentId = readyDeployments?.deployments?.[0].uid
-    const deploymentHost = readyDeployments?.deployments?.[0]?.url
-
-    if (!deploymentId && !deploymentHost) return null
-
-    // First attempt: Vercel deployment favicon endpoint
-    if (deploymentId) {
-        try {
-            const response = await fetch(
-                `https://vercel.com/api/v0/deployments/${deploymentId}/favicon?${params.toString()}`,
-                {
-                    headers: {
-                        Authorization: `Bearer ${currentConnection.apiToken}`,
-                    },
-                }
-            )
-
-            if (response.status === 200) {
-                return response.url
-            }
-        } catch (error) {
-            console.log('[Error] Error fetching deployment favicon', error)
-            // continue to website fallback below
-        }
-    }
-
-    // Fallback: try to resolve favicon from the website itself
-    if (deploymentHost) {
-        const websiteBaseUrl = `https://${deploymentHost}`
-        try {
-            const fallbackUrl = await resolveWebsiteFaviconUrl(websiteBaseUrl)
-            if (fallbackUrl) {
-                return fallbackUrl
-            }
-        } catch (error) {
-            console.log('[Error] Error resolving website favicon', error)
-        }
-    }
-
-    return null
-}
-
-async function resolveWebsiteFaviconUrl(siteBaseUrl: string): Promise<string | null> {
-    const base = siteBaseUrl.replace(TRAILING_SLASHES_REGEX, '')
-    const candidatePaths = [
-        '/favicon.ico',
-        '/favicon.png',
-        '/favicon.svg',
-        '/apple-touch-icon.png',
-        '/apple-touch-icon-precomposed.png',
-    ]
-
-    for (const path of candidatePaths) {
-        const url = `${base}${path}`
-        try {
-            const res = await fetch(url)
-            const contentType = res.headers.get('content-type') || ''
-            if (
-                res.status === 200 &&
-                (contentType.includes('image') ||
-                    path.endsWith('.ico') ||
-                    path.endsWith('.png') ||
-                    path.endsWith('.svg'))
-            ) {
-                return url
-            }
-        } catch (_e) {
-            // ignore and try next candidate
-        }
-    }
-
-    // As a last resort, try parsing the homepage for a <link rel="icon" ...>
-    try {
-        const homeRes = await fetch(base)
-        if (homeRes.status === 200) {
-            const html = await homeRes.text()
-            const href = extractIconHrefFromHtml(html)
-            if (href) {
-                if (ABSOLUTE_URL_REGEX.test(href)) {
-                    return href
-                }
-                const normalized = href.startsWith('/') ? `${base}${href}` : `${base}/${href}`
-                return normalized
-            }
-        }
-    } catch (_e) {
-        // ignore
-    }
-
-    return null
-}
-
-function extractIconHrefFromHtml(html: string): string | null {
-    const match = html.match(LINK_ICON_HREF_REGEX)
-    const href = match?.[1]
-    return href || null
-}
-
-/* ANALYTICS */
-export async function fetchProjectAnalyticsAvailability({
-    projectId,
-}: {
-    projectId: string
-}): Promise<{ isEnabled: boolean; hasData: boolean }> {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        projectId,
-        teamId: currentTeamId!,
-    })
-
-    const url = `https://vercel.com/api/v1/web/insights/enabled?${params.toString()}`
-
-    const response = await fetch(url, {
-        headers: {
-            Authorization: `Bearer ${currentConnection.apiToken}`,
-            Accept: 'application/json',
-        },
-    })
-
-    if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        throw new Error(`Error fetching analytics availability: ${response.status} ${text}`)
-    }
-
-    return (await response.json()) as { isEnabled: boolean; hasData: boolean }
-}
-
-export async function fetchProjectAnalyticsOverview({
-    projectId,
-    from,
-    to,
-}: {
-    projectId: string
-    from: string
-    to: string
-}): Promise<{ total: number; devices: number; bounceRate: number }> {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        environment: 'production',
-        // empty filter {}
-        'filter{}': '',
-        from,
-        projectId,
-        teamId: currentTeamId,
-        to,
-    })
-
-    const url = `https://vercel.com/api/web-analytics/overview?${params.toString()}`
-
-    const response = await fetch(url, {
-        headers: {
-            Authorization: `Bearer ${currentConnection.apiToken}`,
-            Accept: 'application/json',
-        },
-    })
-
-    if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        throw new Error(`Error fetching analytics overview: ${response.status} ${text}`)
-    }
-
-    return (await response.json()) as { total: number; devices: number; bounceRate: number }
-}
-
-export async function fetchProjectAnalyticsOverviewLast24h({
-    projectId,
-}: {
-    projectId: string
-}) {
-    const endTime = roundToGranularity(new Date(), '5m', 'down').toISOString()
-    const startTime = roundToGranularity(new Date(Date.now() - ms('24h')), '5m', 'up').toISOString()
-    return await fetchProjectAnalyticsOverview({ projectId, from: startTime, to: endTime })
-}
-
-export async function fetchProjectAnalyticsTimeseries({
-    projectId,
-    from,
-    to,
-}: {
-    projectId: string
-    from: string
-    to: string
-}): Promise<{data?: { groupCount: number; groups?: { all?: { key: string; total: number; devices: number; bounceRate: number }[] } } }> {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        environment: 'production',
-        filter: '{}',
-        from,
-        projectId,
-        teamId: currentTeamId,
-        to,
-    })
-
-    const url = `https://vercel.com/api/web-analytics/timeseries?${params.toString()}`
-
-    const response = await fetch(url, {
-        headers: {
-            Authorization: `Bearer ${currentConnection.apiToken}`,
-            Accept: 'application/json',
-        },
-    })
-
-    if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        throw new Error(`Error fetching analytics timeseries: ${response.status} ${text}`)
-    }
-
-    return await response.json()
-}
-
-export async function fetchProjectAnalyticsTimeseriesLast7d({
-    projectId,
-}: {
-    projectId: string
-}) {
-    const endTime = roundToGranularity(new Date(), '1h', 'up').toISOString()
-    const startTime = roundToGranularity(
-        new Date(Date.now() - ms('7d')),
-        '1h',
-        'down'
-    ).toISOString()
-    return await fetchProjectAnalyticsTimeseries({ projectId, from: startTime, to: endTime })
-}
-
-/* DEPLOYMENTS */
-export async function fetchTeamDeployments(
-    {
-        limit,
-        target,
-        withGitRepoInfo,
-        state,
-        projectId,
-    }: {
-        limit?: number
-        target?: 'production' | 'preview'
-        withGitRepoInfo?: boolean
-        state?: CommonDeploymentStatus[]
-        projectId?: string
-    } = { withGitRepoInfo: true }
-) {
-    console.log('fetchTeamDeployments')
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    if (limit) {
-        params.append('limit', limit.toString())
-    }
-
-    if (target) {
-        params.append('target', target)
-    }
-
-    if (state) {
-        params.append('state', state.join(','))
-    }
-
-    if (projectId) {
-        params.append('projectId', projectId)
-    }
-
-    if (withGitRepoInfo) {
-        params.append('withGitRepoInfo', withGitRepoInfo.toString())
-    }
-
-    console.log('[fetchTeamDeployments] params', params.toString())
-
-    try {
-        const response = await vercel.get<{
-            deployments: Deployment[]
-            pagination: {
-                count: number
-                next: string | null
-                previous: string | null
-            }
-        }>(`/v6/deployments?${params.toString()}`)
-        return response
-    } catch (error) {
-        console.log('[fetchTeamDeployments]  Error fetching deployments', error)
-        throw error
-    }
-}
-
-export async function fetchProductionDeployment({ projectId }: { projectId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    try {
-        const response = await vercel.get<{
-            deployment: Deployment
-            deploymentIsStale: boolean
-            rollbackDescription: null | any
-        }>(`/projects/${projectId}/production-deployment?${params.toString()}`)
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching production deployment', error)
-        throw error
-    }
-}
-
-export async function fetchTeamDeployment({ deploymentId }: { deploymentId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-        includeDeleted: 'true',
-    })
-
-    try {
-        const response = await vercel.get<Deployment>(
-            // this one *needs* to have the v13 prefix
-            // otherwise we get less fields
-            `/v13/deployments/${deploymentId}?${params.toString()}`
-        )
-        return response
-    } catch (error) {
-        console.log('[Error] deploymentId', deploymentId)
-        console.log('[Error] Error fetching deployment (wtf)', error)
-        throw error
-    }
-}
-
-export async function fetchTeamDeploymentBuildMetadata({
-    deployment,
-}: { deployment: Deployment | Project['latestDeployments'][number] }) {
-    try {
-        const deployMetadata =
-            deployment.readyState === 'READY'
-                ? await fetchTeamDeploymenBuildOutputs({
-                      deploymentId: deployment.id,
-                  })
-                : undefined
-
-        const buildFunctions =
-            deployment.readyState === 'READY'
-                ? await fetchTeamDeploymentBuildFunctions({
-                      deploymentId: deployment.id,
-                  })
-                : undefined
-
-        const buildLogs = await fetchTeamDeploymenBuildLogs({ deploymentId: deployment.id })
-
-        const sourceFileTree = await fetchTeamDeploymenBuildFileTree({
-            deploymentUrl: deployment.url,
-            base: 'src',
-        })
-
-        const outputFileTree =
-            deployment.readyState === 'READY'
-                ? await fetchTeamDeploymenBuildFileTree({
-                      deploymentUrl: deployment.url,
-                      base: 'out',
-                  })
-                : undefined
-
-        return {
-            deployMetadata,
-            buildLogs,
-            buildFunctions,
-            sourceFileTree,
-            outputFileTree,
-        }
-    } catch (error) {
-        console.log('[Error] Error fetching deployment build metadata', error)
-        throw error
-    }
-}
-
-async function fetchTeamDeploymenBuildOutputs({ deploymentId }: { deploymentId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    try {
-        const response = await vercel.get<DeploymentBuildMetadata>(
-            `/deployments/${deploymentId}/files/outputs?${params.toString()}&file=../deploy_metadata.json`
-        )
-
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching deployment build outputs', error)
-        // throw error
-    }
-}
-
-async function fetchTeamDeploymentBuildFunctions({ deploymentId }: { deploymentId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    try {
-        const response = await vercel.get<{ builds: DeploymentBuild[] }>(
-            `/deployments/${deploymentId}/builds?${params.toString()}&file=../deploy_metadata.json`
-        )
-
-        return response?.builds?.[0]?.output.sort((a, b) => a.path.localeCompare(b.path))
-    } catch (error) {
-        console.log('[Error] Error fetching deployment build outputs', error)
-        throw error
-    }
-}
-
-async function fetchTeamDeploymenBuildLogs({ deploymentId }: { deploymentId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    try {
-        const response = await vercel.get<DeploymentBuildLog[]>(
-            // this one *needs* to have the v3 prefix
-            // otherwise we get a "infinite loop detected" error
-            `/v3/deployments/${deploymentId}/events?${params.toString()}`
-        )
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching deployment logs', error)
-        throw error
-    }
-}
-
-export async function fetchTeamDeploymenBuildFileTree({
-    deploymentUrl,
-    base,
-    // might not work if you are using a framework that doesn't use "OUT"
-}: { deploymentUrl: string; base: 'src' | 'out' | string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-        base: base,
-    })
-
-    try {
-        const response = await vercel.get<DeploymentBuildAsset[]>(
-            `/file-tree/${deploymentUrl}?${params.toString()}`
-        )
-
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching deployment file tree for base', base, error)
-        throw error
-    }
-}
-
-/* FIREWALL */
-export async function fetchProjectFirewallRules({ projectId }: { projectId: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        projectId,
-        teamId: currentTeamId,
-    })
-
-    try {
-        const response = await vercel.get<{
-            active: {
-                version: number
-                crs: {
-                    [key: string]: {
-                        active: boolean
-                        action: string
-                    }
-                }
-                rules: {
-                    name: string
-                    active: boolean
-                    description: string
-                    action: {
-                        mitigate: {
-                            redirect: string | null
-                            action: string
-                            rateLimit: string | null
-                            actionDuration: string | null
-                        }
-                    }
-                    id: string
-                    conditionGroup: {
-                        conditions: {
-                            type: string
-                            op: string
-                            value: string
-                        }[]
-                    }[]
-                }[]
-                ips: string[]
-                firewallEnabled: boolean
-                ownerId: string
-                changes: any[]
-                updatedAt: string
-                id: string
-                projectKey: string
-            } | null
-            draft: null | any
-            versions: any[]
-        }>(`/v1/security/firewall/config?${params.toString()}`)
-
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching firewall rules', error)
-        throw error
-    }
-}
-
-export async function fetchProjectFirewallMetrics({
-    projectId,
-    summaryOnly = false,
-}: { projectId: string; summaryOnly?: boolean }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const endTime = roundToGranularity(new Date(), '5m', 'down').toISOString()
-    const startTime = roundToGranularity(new Date(Date.now() - ms('24h')), '5m', 'up').toISOString()
-
-    try {
-        const response = await vercel.post<{
-            data: {
-                value: number
-                timestamp: string
-                wafRuleId: '' | 'sys_dos_mitigation' | string
-                wafAction: '' | 'deny' | 'challenge'
-            }[]
-            statistics: {
-                bytesRead: number
-                rowsRead: number
-                dbTimeSeconds: number
-            }
-            summary: {
-                wafRuleId: '' | 'sys_dos_mitigation' | string
-                wafAction: '' | 'allow' | 'deny' | 'challenge'
-                value: number
-            }[]
-        }>(`/observability/metrics?ownerId=${currentTeamId}`, {
-            event: 'firewallAction',
-            reason: 'firewall_tab',
-            rollups: {
-                value: {
-                    measure: 'count',
-                    aggregation: 'sum',
-                },
-            },
-            granularity: {
-                minutes: 5,
-            },
-            groupBy: ['wafRuleId', 'wafAction'],
-            limit: 500,
-            tailRollup: 'truncate',
-            summaryOnly: summaryOnly,
-            startTime,
-            endTime,
-            scope: {
-                type: 'project',
-                ownerId: currentTeamId,
-                projectIds: [projectId],
-            },
-        })
-
-        return response?.summary || null
-    } catch (error) {
-        console.log('[Error] Error fetching firewall metrics', error)
-        throw error
-    }
-}
-
-/* OBSERVABILITY */
-export async function fetchObservabilityTTFB({
-    projectId,
-    summaryOnly = false,
-}: {
-    projectId: string
-    summaryOnly?: boolean
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    console.log('projectId', projectId)
-
-    try {
-        const response = await vercel.post<{
-            data: {
-                avgTtfb: number
-                p75Ttfb: number
-                p95Ttfb: number
-                timestamp: string // ISO string
-            }
-            statistics: {
-                bytesRead: number
-                rowsRead: number
-                dbTimeSeconds: number
-            }
-            summary: {
-                avgTtfb: number
-                p75Ttfb: number
-                p95Ttfb: number
-            }[]
-        }>(`/observability/metrics?ownerId=${currentTeamId}`, {
-            event: 'serverlessFunctionInvocation',
-            rollups: {
-                avgTtfb: {
-                    measure: 'ttfbMs',
-                    aggregation: 'avg',
-                },
-                p75Ttfb: {
-                    measure: 'ttfbMs',
-                    aggregation: 'p75',
-                },
-                p95Ttfb: {
-                    measure: 'ttfbMs',
-                    aggregation: 'p95',
-                },
-            },
-            tailRollup: 'truncate',
-            summaryOnly: summaryOnly,
-            scope: {
-                type: 'project',
-                ownerId: currentTeamId,
-                projectIds: [projectId],
-            },
-            reason: 'observability_chart_free',
-            granularity: {
-                minutes: 5,
-            },
-            endTime: roundToGranularity(new Date(), '5m', 'down').toISOString(),
-            startTime: roundToGranularity(
-                new Date(Date.now() - ms('12h')),
-                '5m',
-                'up'
-            ).toISOString(),
-            filter: "environment eq 'production'",
-        })
-
-        return response.summary?.[0] || null
-    } catch (error) {
-        console.log('[Error] Error fetching observability TTFB', error)
-        throw error
-    }
-}
-
-export async function fetchObservabilityCpuThrottle({
-    projectId,
-    summaryOnly = false,
-}: {
-    projectId: string
-    summaryOnly?: boolean
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    try {
-        const response = await vercel.post<{
-            data: {
-                cpuThrottleMsAvg: number
-                cpuThrottleMsP75: number
-                cpuThrottleMsP95: number
-                timestamp: string // ISO string
-            }[]
-            statistics: {
-                bytesRead: number
-                rowsRead: number
-                dbTimeSeconds: number
-            }
-            summary: {
-                cpuThrottleMsAvg: number
-                cpuThrottleMsP75: number
-                cpuThrottleMsP95: number
-            }[]
-        }>(`/observability/metrics?ownerId=${currentTeamId}`, {
-            event: 'serverlessFunctionInvocation',
-            rollups: {
-                cpuThrottleMsAvg: {
-                    measure: 'concurrencyThrottleMs',
-                    aggregation: 'avg',
-                },
-                cpuThrottleMsP75: {
-                    measure: 'concurrencyThrottleMs',
-                    aggregation: 'p75',
-                },
-                cpuThrottleMsP95: {
-                    measure: 'concurrencyThrottleMs',
-                    aggregation: 'p95',
-                },
-            },
-            tailRollup: 'truncate',
-            summaryOnly: summaryOnly,
-            scope: {
-                type: 'project',
-                ownerId: currentTeamId,
-                projectIds: [projectId],
-            },
-            reason: 'observability_chart_free',
-            granularity: {
-                minutes: 5,
-            },
-            endTime: roundToGranularity(new Date(), '5m', 'down').toISOString(),
-            startTime: roundToGranularity(
-                new Date(Date.now() - ms('12h')),
-                '5m',
-                'up'
-            ).toISOString(),
-            filter: "environment eq 'production'",
-        })
-
-        return response.summary?.[0] || null
-    } catch (error) {
-        console.log('[Error] Error fetching observability CPU throttle', error)
-        throw error
-    }
-}
-
-export async function fetchObservabilityMemory({
-    projectId,
-    summaryOnly = false,
-}: {
-    projectId: string
-    summaryOnly?: boolean
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    try {
-        const response = await vercel.post<{
-            data: {
-                maxMemory: number
-                provisioned: number
-                timestamp: string // ISO string
-            }[]
-            statistics: {
-                bytesRead: number
-                rowsRead: number
-                dbTimeSeconds: number
-            }
-            summary: {
-                maxMemory: number
-                provisioned: number
-            }[]
-        }>(`/observability/metrics?ownerId=${currentTeamId}`, {
-            event: 'serverlessFunctionInvocation',
-            rollups: {
-                maxMemory: {
-                    measure: 'peakMemoryMb',
-                    aggregation: 'max',
-                },
-                provisioned: {
-                    measure: 'provisionedMemoryMb',
-                    aggregation: 'max',
-                },
-            },
-            tailRollup: 'truncate',
-            summaryOnly: summaryOnly,
-            scope: {
-                type: 'project',
-                ownerId: currentTeamId,
-                projectIds: [projectId],
-            },
-            reason: 'observability_chart_free',
-            granularity: {
-                minutes: 5,
-            },
-            endTime: roundToGranularity(new Date(), '5m', 'down').toISOString(),
-            startTime: roundToGranularity(
-                new Date(Date.now() - ms('12h')),
-                '5m',
-                'up'
-            ).toISOString(),
-            filter: "environment eq 'production'",
-        })
-
-        return response.summary?.[0] || null
-    } catch (error) {
-        console.log('[Error] Error fetching observability memory', error)
-        throw error
-    }
-}
-
-export async function fetchObservabilityColdStart({
-    projectId,
-    summaryOnly = false,
-}: {
-    projectId: string
-    summaryOnly?: boolean
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    try {
-        const response = await vercel.post<{
-            data: {
-                functionStartType: 'hot' | 'cold'
-                total: number
-                value: number
-                timestamp: string // ISO string
-            }[]
-            statistics: {
-                bytesRead: number
-                rowsRead: number
-                dbTimeSeconds: number
-            }
-            summary: {
-                functionStartType: 'hot' | 'cold'
-                total: number
-                value: number
-            }[]
-        }>(`/observability/metrics?ownerId=${currentTeamId}`, {
-            event: 'serverlessFunctionInvocation',
-            rollups: {
-                total: {
-                    measure: 'count',
-                    aggregation: 'sum',
-                },
-                value: {
-                    measure: 'count',
-                    aggregation: 'percent',
-                },
-            },
-            groupBy: ['functionStartType'],
-            scope: {
-                type: 'project',
-                ownerId: currentTeamId,
-                projectIds: [projectId],
-            },
-            reason: 'observability_chart_free',
-            granularity: {
-                minutes: 5,
-            },
-            summaryOnly: summaryOnly,
-            endTime: roundToGranularity(new Date(), '5m', 'down').toISOString(),
-            startTime: roundToGranularity(
-                new Date(Date.now() - ms('12h')),
-                '5m',
-                'up'
-            ).toISOString(),
-            filter: "environment eq 'production'",
-        })
-
-        return response.summary || null
-    } catch (error) {
-        console.log('[Error] Error fetching observability cold start', error)
-        throw error
-    }
-}
-
-export async function fetchObservabilityRouteSummary({
-    projectId,
-    summaryOnly = false,
-}: {
-    projectId: string
-    summaryOnly?: boolean
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    try {
-        const response = await vercel.post<{
-            data: {
-                route: string
-                invocations: number
-                errors: number
-                p75DurationMS: number
-                sumGbhrs: number
-                timestamp: string // ISO string
-            }[]
-            statistics: {
-                bytesRead: number
-                rowsRead: number
-                dbTimeSeconds: number
-            }
-            summary: {
-                route: string
-                invocations: number
-                errors: number
-                p75DurationMS: number
-                sumGbhrs: number
-            }[]
-        }>(`/observability/metrics?ownerId=${currentTeamId}`, {
-            event: 'serverlessFunctionInvocation',
-            rollups: {
-                invocations: {
-                    measure: 'count',
-                    aggregation: 'sum',
-                },
-                errors: {
-                    measure: 'count',
-                    aggregation: 'sum',
-                    filter: "errorCode ne '' or httpStatus ge 500",
-                },
-                p75DurationMS: {
-                    measure: 'functionDurationMs',
-                    aggregation: 'p75',
-                },
-                sumGbhrs: {
-                    measure: 'functionDurationGbhr',
-                    aggregation: 'sum',
-                },
-            },
-            groupBy: ['route'],
-            limit: 500,
-            tailRollup: 'truncate',
-            summaryOnly: summaryOnly,
-            lowGranularity: true,
-            scope: {
-                type: 'project',
-                ownerId: currentTeamId,
-                projectIds: [projectId],
-            },
-            reason: 'observability_chart_free',
-            granularity: {
-                hours: 1,
-            },
-            endTime: roundToGranularity(new Date(), '1h', 'down').toISOString(),
-            startTime: roundToGranularity(
-                new Date(Date.now() - ms('12h')),
-                '1h',
-                'up'
-            ).toISOString(),
-            filter: "environment eq 'production'",
-        })
-
-        return response.summary || null
-    } catch (error) {
-        console.log('[Error] Error fetching observability route summary', error)
-        throw error
-    }
-}
-
-/* DOMAINS */
-export async function fetchTeamProjectDomains({
-    projectId,
-    from,
-}: {
-    projectId: string
-    from?: number
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    if (from) {
-        params.append('from', from.toString())
-    }
-
-    console.log('[fetchTeamProjectDomains] params', params.toString())
-
-    try {
-        const response = await vercel.get<{
-            pagination: CommonPagination
-            domains: Domain[]
-        }>(`/projects/${projectId}/domains?${params.toString()}`)
-        return response
-    } catch (error) {
-        console.log('[fetchTeamProjectDomains]  Error fetching domains', error)
-        throw error
-    }
-}
-
-export async function fetchTeamProjectDomainConfig(domain: string) {
-    console.log('Fetching domain config', domain)
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-        strict: 'false',
-    })
-
-    try {
-        const response = await vercel.get<DomainConfig>(
-            `/v6/domains/${domain.toLowerCase()}/config?${params.toString()}`
-        )
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching domain config', error)
-        throw error
-    }
-}
-
-/* ENVIRONMENT */
-export async function fetchTeamProjectEnvironment({
-    projectId,
-    target,
-}: {
-    projectId: string
-    target?: 'preview' | 'production' | 'development'
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    if (target) {
-        params.append('target', target)
-    }
-
-    console.log('[fetchTeamProjectEnvironments] params', params.toString())
-
-    try {
-        const response = await vercel.get<{ envs: CommonEnvironmentVariable[] }>(
-            // this one *needs* to have the v9 prefix
-            `/v9/projects/${projectId}/env?${params.toString()}`
-        )
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching environment variables', error)
-        throw error
-        // return { envs: [] }
-    }
-}
-
-export async function decryptEnvironmentVariable({
-    id,
-    projectId,
-}: {
-    id: string
-    projectId: string
-}) {
-    console.log('Decrypting environment variable', { projectId, id })
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
-
-    try {
-        const response = await vercel.get<CommonEnvironmentVariable>(
-            `/projects/${projectId}/env/${id}?${params.toString()}`
-        )
-        return response
-    } catch (error) {
-        console.log('[Error] Error decrypting environment variable', error)
-        throw error
-    }
-}
-
-/* LOGS */
-export async function fetchProjectLogs({
-    projectId,
-    deploymentId,
-    startDate,
-    endDate,
-    page,
-    attributes,
-}: {
-    projectId: string
-    deploymentId?: string
-    startDate: string
-    endDate?: string
-    page?: number
-    attributes?: Record<string, string[]>
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const params = new URLSearchParams({
-        ownerId: currentTeamId,
-        projectId,
-        startDate,
-    })
-
-    if (deploymentId) {
-        params.append('deploymentId', deploymentId)
-    }
-
-    if (endDate) {
-        params.append('endDate', endDate)
-    }
-
-    if (page) {
-        params.append('page', page.toString())
-    }
-
-    if (attributes) {
-        for (const [attribute, values] of Object.entries(attributes)) {
-            if (values.length === 0) continue
-            params.append(attribute, values.join(','))
-        }
-    }
-
-    console.log('[fetchRequestLogs] params', params.toString())
-
-    try {
-        const response = await vercel.get<{ rows: Log[]; hasMoreRows: boolean }>(
-            `/logs/request-logs?${params.toString()}`
-        )
-        return response
-    } catch (error) {
-        console.log('[Error] Error fetching request logs', error)
-        throw error
-    }
-}
-
-export async function fetchProjectLogsFilters({
-    projectId,
-    attributes,
-    startDate,
-    endDate,
-}: {
-    projectId: string
-    attributes: string[]
-    startDate: string
-    endDate?: string
-}) {
-    const currentConnection = usePersistedStore.getState().currentConnection
-
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
-
-    const currentTeamId = currentConnection.currentTeamId
-
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
-
-    const baseParams = new URLSearchParams({
-        ownerId: currentTeamId,
-        projectId,
-        startDate,
-    })
-
-    if (endDate) {
-        baseParams.append('endDate', endDate)
-    }
-
-    // Create a function for fetching a single attribute with delay
-    const fetchAttributeWithDelay = async (attribute: string, delayMs: number) => {
-        // Delay execution by specified milliseconds
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
-
-        try {
-            const params = new URLSearchParams(baseParams)
-            params.append('attributeName', attribute)
-
-            const response = await vercel.get<{
-                availableOptions: number
-                rows: {
-                    attributeValue: string
-                    total: number
-                }[]
-            }>(`/logs/request-logs/filter-values?${params.toString()}`)
-
-            return { attribute, rows: response.rows }
-        } catch (error) {
-            console.log('[Error] Error fetching filter values for', attribute, error)
-            return { attribute, rows: [] }
-        }
-    }
-
-    // Create an array of promises with staggered delays
-    const promises = attributes.map((attribute, index) =>
-        fetchAttributeWithDelay(attribute, index * 50)
-    )
-
-    const results = await Promise.all(promises)
-
-    // Combine results into the final filterValues object
-    const filterValues: Record<string, { attributeValue: string; total: number }[]> = {}
-    for (const result of results) {
-        filterValues[result.attribute] = result.rows
-    }
-
-    return filterValues
-}
-
-/* WEBHOOKS */
-export async function fetchWebhook({
-    connectionId,
+  const params = new URLSearchParams({
     teamId,
-    pushToken,
-}: { connectionId?: string; teamId?: string; pushToken: string }) {
-    const currentConnection = usePersistedStore.getState().currentConnection
+    latestDeployments: String(opts.latestDeployments ?? 5),
+  })
+  if (opts.limit) params.append('limit', String(opts.limit))
+  if (opts.from) params.append('from', String(opts.from))
+  return vercel.get<{ projects: Project[]; pagination: CommonPagination }>(`/v9/projects?${params}`, token)
+}
 
-    if (!currentConnection) {
-        throw new Error('Current connection not found')
-    }
+export async function fetchTeamDeployments(
+  token: string,
+  teamId: string,
+  opts: {
+    limit?: number
+    target?: 'production' | 'preview'
+    withGitRepoInfo?: boolean
+    state?: CommonDeploymentStatus[]
+    projectId?: string
+  } = {}
+) {
+  const params = new URLSearchParams({ teamId })
+  if (opts.limit) params.append('limit', String(opts.limit))
+  if (opts.target) params.append('target', opts.target)
+  if (opts.state?.length) params.append('state', opts.state.join(','))
+  if (opts.projectId) params.append('projectId', opts.projectId)
+  if (opts.withGitRepoInfo) params.append('withGitRepoInfo', 'true')
+  return vercel.get<{ deployments: Deployment[]; pagination: { count: number; next: string | null; previous: string | null } }>(
+    `/v6/deployments?${params}`,
+    token
+  )
+}
 
-    const currentTeamId = teamId || currentConnection.currentTeamId
+export async function fetchTeamDeployment(token: string, teamId: string, deploymentId: string) {
+  const params = new URLSearchParams({ teamId, includeDeleted: 'true' })
+  return vercel.get<Deployment>(`/v13/deployments/${deploymentId}?${params}`, token)
+}
 
-    if (!currentTeamId) {
-        throw new Error('Current team not found')
-    }
+export async function fetchProductionDeployment(token: string, teamId: string, projectId: string) {
+  const params = new URLSearchParams({ teamId })
+  return vercel.get<{ deployment: Deployment; deploymentIsStale: boolean; rollbackDescription: null | unknown }>(
+    `/projects/${projectId}/production-deployment?${params}`,
+    token
+  )
+}
 
-    const params = new URLSearchParams({
-        teamId: currentTeamId,
-    })
+export async function fetchTeamDeploymenBuildLogs(token: string, teamId: string, deploymentId: string) {
+  const params = new URLSearchParams({ teamId })
+  return vercel.get<DeploymentBuildLog[]>(`/v3/deployments/${deploymentId}/events?${params}`, token)
+}
 
-    console.log('PUSH TOKEN', pushToken)
+export async function fetchTeamDeploymenBuildFileTree(
+  token: string,
+  teamId: string,
+  deploymentUrl: string,
+  base: 'src' | 'out' | string
+) {
+  const params = new URLSearchParams({ teamId, base })
+  return vercel.get<DeploymentBuildAsset[]>(`/file-tree/${deploymentUrl}?${params}`, token)
+}
 
-    try {
-        const response = await vercel.get<Webhook[]>(
-            `/v1/webhooks?${params.toString()}`,
-            undefined,
-            connectionId
-        )
-        return response.find(
-            (webhook) =>
-                webhook.url.includes(process.env.EXPO_PUBLIC_WEBHOOK_URL!) &&
-                webhook.url.includes(`_id=${pushToken.substring(0, 8)}`)
-        )
-    } catch (error) {
-        console.log('[Error] Error fetching webhooks', error)
-        throw error
-    }
+export async function fetchTeamProjectDomains(
+  token: string,
+  teamId: string,
+  projectId: string,
+  from?: number
+) {
+  const params = new URLSearchParams({ teamId })
+  if (from) params.append('from', String(from))
+  return vercel.get<{ pagination: CommonPagination; domains: Domain[] }>(
+    `/projects/${projectId}/domains?${params}`,
+    token
+  )
+}
+
+export async function fetchTeamProjectDomainConfig(token: string, teamId: string, domain: string) {
+  const params = new URLSearchParams({ teamId })
+  return vercel.get<DomainConfig>(`/v6/domains/${domain}/config?${params}`, token)
+}
+
+export async function fetchTeamProjectEnvironmentVariables(
+  token: string,
+  teamId: string,
+  projectId: string
+) {
+  const params = new URLSearchParams({ teamId, decrypt: 'false' })
+  return vercel.get<{ envs: CommonEnvironmentVariable[] }>(`/v9/projects/${projectId}/env?${params}`, token)
+}
+
+export async function fetchTeamLogs(
+  token: string,
+  teamId: string,
+  projectId: string,
+  opts: { limit?: number; since?: number; until?: number } = {}
+) {
+  const params = new URLSearchParams({ teamId, projectId, limit: String(opts.limit ?? 100) })
+  if (opts.since) params.append('since', String(opts.since))
+  if (opts.until) params.append('until', String(opts.until))
+  return vercel.get<Log[]>(`/v1/logs?${params}`, token)
+}
+
+export async function fetchWebhook(
+  token: string,
+  teamId: string,
+  pushToken: string
+) {
+  const params = new URLSearchParams({ teamId })
+  const response = await vercel.get<{ webhooks: Webhook[] }>(`/v1/webhooks?${params}`, token)
+  return response?.webhooks?.find((w) => w.url.includes(pushToken.substring(0, 8))) ?? null
+}
+
+export async function fetchProjectAnalyticsAvailability(
+  token: string,
+  teamId: string,
+  projectId: string
+): Promise<{ isEnabled: boolean; hasData: boolean }> {
+  const params = new URLSearchParams({ projectId, teamId })
+  const response = await fetch(`https://vercel.com/api/v1/web/insights/enabled?${params}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  })
+  if (!response.ok) throw new Error(`Error fetching analytics availability: ${response.status}`)
+  return response.json()
+}
+
+export async function fetchProjectFirewallRules(token: string, teamId: string, projectId: string) {
+  const params = new URLSearchParams({ projectId, teamId })
+  return vercel.get<{
+    active: {
+      firewallEnabled: boolean
+      rules: { name: string; active: boolean; description: string; id: string }[]
+    } | null
+    draft: null | unknown
+  }>(`/v1/security/firewall/config?${params}`, token)
+}
+
+export async function fetchObservabilityTTFB(token: string, teamId: string, projectId: string) {
+  const endTime = roundToGranularity(new Date(), '5m', 'down').toISOString()
+  const startTime = roundToGranularity(new Date(Date.now() - ms('12h')), '5m', 'up').toISOString()
+  return vercel.post<{
+    summary: { avgTtfb: number; p75Ttfb: number; p95Ttfb: number }[]
+  }>(`/observability/metrics?ownerId=${teamId}`, token, {
+    event: 'serverlessFunctionInvocation',
+    rollups: {
+      avgTtfb: { measure: 'ttfbMs', aggregation: 'avg' },
+      p75Ttfb: { measure: 'ttfbMs', aggregation: 'p75' },
+      p95Ttfb: { measure: 'ttfbMs', aggregation: 'p95' },
+    },
+    tailRollup: 'truncate',
+    summaryOnly: true,
+    scope: { type: 'project', ownerId: teamId, projectIds: [projectId] },
+    reason: 'observability_chart_free',
+    granularity: { minutes: 5 },
+    endTime,
+    startTime,
+    filter: "environment eq 'production'",
+  })
 }

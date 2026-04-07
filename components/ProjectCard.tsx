@@ -1,262 +1,74 @@
-import { fetchTeamProjectFavicon } from '@/api/queries'
-import { COLOR_FOR_BUILD_STATUS } from '@/lib/constants'
-import { useBrowser } from '@/lib/hooks'
-import { useStore } from '@/store/default'
-import { COLORS } from '@/theme/colors'
+import Link from 'next/link'
 import type { Project } from '@/types/projects'
-import { Ionicons } from '@expo/vector-icons'
-import { useQuery } from '@tanstack/react-query'
-import { format } from 'date-fns'
-import * as Haptics from 'expo-haptics'
-import { router } from 'expo-router'
-import { SquircleView } from 'expo-squircle-view'
-import { useMemo } from 'react'
-import { Alert, Image, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native'
+import { StatusBadge } from '@/components/StatusBadge'
+import { formatDeploymentShortId, formatFrameworkName } from '@/lib/format'
+import { GitBranch, Clock } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
+import { cn } from '@/lib/utils'
 
-export default function ProjectCard({
-    project,
-    onPress,
-}: { project: Project; onPress?: () => void }) {
-    const setLogsSelectedAttributes = useStore((state) => state.setLogsSelectedAttributes)
-    const openBrowser = useBrowser()
+interface ProjectCardProps {
+  project: Project
+}
 
-    const faviconQuery = useQuery({
-        queryKey: ['project', project.id, 'favicon'],
-        queryFn: () => fetchTeamProjectFavicon({ projectId: project.id }),
-    })
+export function ProjectCard({ project }: ProjectCardProps) {
+  const latestDeploy = project.latestDeployments?.[0]
+  const productionDeploy = project.targets?.production ?? latestDeploy
+  const status = productionDeploy?.readyState ?? latestDeploy?.readyState
 
-    const { width: windowWidth } = useWindowDimensions()
+  const deployUrl = productionDeploy?.alias?.[0] ?? productionDeploy?.url
+  const branch = productionDeploy?.meta?.githubCommitRef ?? latestDeploy?.meta?.githubCommitRef
+  const commitMsg =
+    productionDeploy?.meta?.githubCommitMessage ?? latestDeploy?.meta?.githubCommitMessage
+  const deployedAt = productionDeploy?.createdAt ?? latestDeploy?.createdAt
 
-    const primaryDomain = useMemo(() => {
-        const primaryAlias = project.alias.find((alias) => Boolean(alias.deployment))
-        return primaryAlias?.domain
-    }, [project])
+  return (
+    <Link
+      href={`/projects/${project.id}`}
+      className={cn(
+        'group block bg-card border border-border rounded-lg p-4',
+        'hover:border-foreground/20 transition-colors duration-150'
+      )}
+    >
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <div className="min-w-0">
+          <h2 className="text-foreground text-sm font-semibold truncate">{project.name}</h2>
+          {deployUrl && (
+            <p className="text-muted-foreground text-xs truncate mt-0.5">{deployUrl}</p>
+          )}
+        </div>
+        {status && <StatusBadge status={status} className="flex-shrink-0 mt-0.5" />}
+      </div>
 
-    const width = useMemo(() => {
-        if (windowWidth < 744) {
-            return '47.5%'
-        }
+      <div className="flex flex-col gap-1.5">
+        {branch && (
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <GitBranch className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="text-xs truncate">{branch}</span>
+          </div>
+        )}
+        {commitMsg && (
+          <p className="text-muted-foreground text-xs truncate pl-5">{commitMsg}</p>
+        )}
+        {deployedAt && (
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="text-xs">
+              {formatDistanceToNow(new Date(deployedAt), { addSuffix: true })}
+            </span>
+          </div>
+        )}
+      </div>
 
-        if (windowWidth < 1024) {
-            return '31.6%'
-        }
-
-        if (windowWidth < 1280) {
-            return '23.6%'
-        }
-
-        return '18.9%'
-    }, [windowWidth])
-
-    const latestDeploymentTime = useMemo(() => {
-        if (!project.latestDeployments?.[0]?.createdAt) {
-            return 'No deployment'
-        }
-        try {
-            return format(new Date(project.latestDeployments?.[0]?.createdAt), 'dd/MM/yyyy')
-        } catch (error) {
-            console.error('Error formatting latest deployment time', error)
-            return 'Bad date'
-        }
-    }, [project.latestDeployments])
-
-    return (
-        <SquircleView
-            key={project.id}
-            borderRadius={12}
-            style={{
-                width: width,
-                height: 180,
-                backgroundColor: COLORS.gray200,
-                elevation: 3,
-                overflow: 'hidden',
-            }}
-        >
-            <TouchableOpacity
-                style={{
-                    flex: 1,
-                    padding: 14,
-                    paddingTop: 14,
-                    paddingBottom: 12,
-                    // gap: 0,
-                    // backgroundColor: 'red',
-                }}
-                onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid)
-                    setLogsSelectedAttributes({ level: [] }) // reset logs filters
-                    onPress?.()
-                    router.push(`/projects/${project.id}/home/`)
-                }}
-            >
-                <View style={{ flexDirection: 'row' }}>
-                    <Image
-                        source={
-                            faviconQuery.data
-                                ? { uri: faviconQuery.data }
-                                : require('@/assets/icon.png')
-                        }
-                        style={{
-                            width: 16,
-                            height: 16,
-                            marginRight: 4,
-                            marginTop: 3,
-                            borderRadius: 8,
-                        }}
-                    />
-
-                    {/* {DUMMY_FAVICONS[project.name] && (
-                        <Image
-                            source={{ uri: DUMMY_FAVICONS[project.name] }}
-                            style={{
-                                width: 16,
-                                height: 16,
-                                marginRight: 4,
-                                marginTop: 4,
-                                borderRadius: 8,
-                            }}
-                        />
-                    )} */}
-
-                    <Text
-                        numberOfLines={2}
-                        style={{
-                            flex: 1,
-                            fontFamily: 'Geist',
-                            color: COLORS.gray1000,
-                            fontSize: 16,
-                            overflow: 'hidden',
-                            height: 47,
-                            lineHeight: 20,
-                            fontWeight: '500',
-                            // backgroundColor: '#ff000005',
-                        }}
-                        ellipsizeMode="tail"
-                    >
-                        {project.name}
-                    </Text>
-                </View>
-
-                <View
-                    style={{
-                        gap: 12,
-                        flex: 1,
-                        justifyContent: 'space-between',
-                        // backgroundColor: '#ff00ff05',
-                    }}
-                >
-                    <TouchableOpacity
-                        style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 2,
-                            paddingRight: 8,
-                        }}
-                        onPress={() => {
-                            openBrowser(`https://${primaryDomain}`)
-                        }}
-                    >
-                        <Ionicons name="link-outline" size={16} color={COLORS.gray900} />
-                        <Text
-                            style={{
-                                color: COLORS.gray900,
-                                fontSize: 12,
-                                fontWeight: 'bold',
-                                fontFamily: 'Geist',
-                            }}
-                            numberOfLines={1}
-                        >
-                            {primaryDomain}
-                        </Text>
-                    </TouchableOpacity>
-
-                    <View
-                        style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            // backgroundColor: 'blue',
-                            paddingRight: 14,
-                        }}
-                    >
-                        {/* probably better to use project.link for the repo metadata instead of latest deployment */}
-                        {project.latestDeployments?.[0]?.meta?.githubRepo && (
-                            <Ionicons
-                                name={'git-branch-outline'}
-                                size={16}
-                                color={COLORS.gray900}
-                            />
-                        )}
-                        <Text
-                            style={{
-                                color: COLORS.gray900,
-                                fontSize: 12,
-                                lineHeight: 14,
-                                fontFamily: 'Geist',
-                            }}
-                            numberOfLines={2}
-                        >
-                            {project.latestDeployments[0]?.meta?.githubRepo
-                                ? `${project.latestDeployments[0].meta.githubOrg}/${project.latestDeployments[0].meta.githubRepo}`
-                                : 'No source control'}
-                        </Text>
-                    </View>
-                </View>
-            </TouchableOpacity>
-
-            <View style={{ height: 1, backgroundColor: COLORS.gray400 }} />
-
-            <TouchableOpacity
-                onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid)
-
-                    if (!project.latestDeployments?.[0]?.id) {
-						Alert.alert('This project has no deployments yet')
-                        return
-                    }
-
-                    router.push(`/deployments/${project.latestDeployments[0].id}/`)
-                    onPress?.()
-                }}
-                style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingHorizontal: 10,
-                    paddingTop: 6,
-                    paddingBottom: 10,
-                    gap: 2,
-                }}
-            >
-                <View style={{ maxWidth: '80%', flexDirection: 'column', gap: 2 }}>
-                    <Text
-                        style={{ color: COLORS.gray1000, fontSize: 10, fontFamily: 'Geist' }}
-                        numberOfLines={1}
-                    >
-                        {project.latestDeployments[0]?.meta?.githubCommitMessage || 'Manual deploy'}
-                    </Text>
-                    <Text
-                        style={{
-                            color: COLORS.gray900,
-                            fontSize: 10,
-                            fontWeight: 'semibold',
-                            fontFamily: 'Geist',
-                        }}
-                    >
-                        {latestDeploymentTime}
-                    </Text>
-                </View>
-
-                {project.latestDeployments?.[0]?.readyState && (
-                    <View
-                        style={{
-                            width: 12,
-                            height: 12,
-                            borderRadius: 6,
-                            backgroundColor:
-                                COLOR_FOR_BUILD_STATUS[project.latestDeployments[0].readyState],
-                        }}
-                    />
-                )}
-            </TouchableOpacity>
-        </SquircleView>
-    )
+      <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
+        <span className="text-muted-foreground text-xs">
+          {formatFrameworkName(project.framework ?? '')}
+        </span>
+        {latestDeploy && (
+          <span className="text-muted-foreground text-xs font-mono">
+            {formatDeploymentShortId(latestDeploy)}
+          </span>
+        )}
+      </div>
+    </Link>
+  )
 }
